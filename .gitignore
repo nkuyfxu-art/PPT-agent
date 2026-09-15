@@ -1,0 +1,8 @@
+node_modules/
+ui-check.png
+ocr-check.png
+/vendor/
+/templates/
+/.sites-package/
+/slidecraft-site.tar.gz
+test-output-*

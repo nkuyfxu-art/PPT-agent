@@ -6,3 +6,9 @@ ocr-check.png
 /.sites-package/
 /slidecraft-site.tar.gz
 test-output-*
+.env
+.env.*
+!.env.example
+dist/
+
+.local/

@@ -1,0 +1,3 @@
+# Tesseract 的安装钩子只显示募捐提示，浏览器运行不需要执行。
+allowBuilds:
+  tesseract.js: false

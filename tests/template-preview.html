@@ -1,0 +1,37 @@
+<!doctype html><meta charset="utf-8"><title>底稿预览回归检查</title>
+<style>body{font:16px system-ui;margin:28px;background:#f5f5f1}canvas{max-width:600px;display:block;margin:12px 0;border:1px solid #bbb}pre{white-space:pre-wrap}</style>
+<h1>底稿预览回归检查</h1><pre id="result">检查中…</pre><div id="previews"></div>
+<script src="/vendor/jszip.min.js"></script>
+<script type="module">
+import {readTemplate,makePptx} from '/pptx.js';
+import {templateSlidePreview,drawTemplatePreview} from '/template-preview.js';
+const results=[],assert=(value,message)=>{if(!value)throw Error(message);results.push(message);};
+async function load(path){return readTemplate(await (await fetch(path)).arrayBuffer());}
+async function show(template,index,label){const h=document.createElement('h2');h.textContent=label;document.querySelector('#previews').append(h);const c=document.createElement('canvas');c.width=960;c.height=960*template.height/template.width;document.querySelector('#previews').append(c);const info=await drawTemplatePreview(c.getContext('2d'),template,index,c.width,c.height);return {canvas:c,info};}
+try{
+ const template=await load('/templates/default-template.pptx');
+ const {canvas,info}=await show(template,0,'用户底稿：4:3，背景继承自版式');
+ assert(template.width/template.height===4/3,'用户底稿保持 4:3 页面比例');
+ assert(info.svg.includes('data:image/jpeg;base64,'),'读取到版式内的真实背景图片');
+ assert(!info.svg.includes('单击此处编辑'),'母版的编辑提示占位符不会进入预览');
+ assert(info.warnings.length===0,'用户底稿没有未还原元素警告');
+ const image=new Image(),url=URL.createObjectURL(new Blob([await template.zip.file('ppt/media/image1.jpeg').async('arraybuffer')],{type:'image/jpeg'}));
+ image.src=url;await image.decode();const expected=document.createElement('canvas');expected.width=canvas.width;expected.height=canvas.height;expected.getContext('2d').drawImage(image,0,0,expected.width,expected.height);URL.revokeObjectURL(url);
+ const actualPixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data,expectedPixels=expected.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+ let error=0;for(let i=0;i<actualPixels.length;i+=4)error+=Math.abs(actualPixels[i]-expectedPixels[i])+Math.abs(actualPixels[i+1]-expectedPixels[i+1])+Math.abs(actualPixels[i+2]-expectedPixels[i+2]);
+ assert(error/(canvas.width*canvas.height*3)<2,'预览背景与原始版式背景图片像素一致（平均差小于 2）');
+ const demo=await load('/demo-template.pptx'),old=await show(demo,0,'原示例：没有缩略图也能显示真实背景与页脚');
+ assert(old.info.background.toLowerCase()==='#19362b'&&old.info.svg.includes('SLIDECRAFT'),'没有缩略图时仍保留实际绿色背景与页脚');
+ const changed=await JSZip.loadAsync(demo.buffer),path=demo.slides[0],second=path.replace('slide1','slide2');
+ changed.file(second,(await changed.file(path).async('string')).replace('19362B','A12345').replace('SLIDECRAFT','SECOND PAGE'));
+ changed.file(second.replace(/([^/]+)$/,'_rels/$1.rels'),await changed.file(path.replace(/([^/]+)$/,'_rels/$1.rels')).async('string'));
+ const page2=await templateSlidePreview(changed,second,demo.width,demo.height);
+ assert(page2.background.toLowerCase()==='#a12345'&&page2.svg.includes('SECOND PAGE')&&!page2.svg.includes('SLIDECRAFT'),'第二页读取自己的背景与文字，不复用整份文件缩略图');
+ const imageBlob=new Blob(['test'],{type:'image/png'}),semantic={vertices:[{id:'A',label:'A',x:100,y:100,label_x:100,label_y:80},{id:'B',label:'B',x:100,y:900,label_x:80,label_y:900},{id:'C',label:'C',x:900,y:900,label_x:920,label_y:900}],edges:[{from:'A',to:'B'},{from:'B',to:'C'},{from:'A',to:'C'}],annotations:[],auxiliaries:[]};
+ const blob=await makePptx(template,0,[{type:'text',text:'测试 $AB=2$'},{type:'image',png:imageBlob,renderMode:'semantic',aiProfile:{semantic},w:800,h:800,pngWidth:800,pngHeight:800}],1000,1000,{});
+ const output=await JSZip.loadAsync(await blob.arrayBuffer());
+ for(const [name,file]of Object.entries(template.zip.files)){if(file.dir||['ppt/slides/slide1.xml','ppt/slides/_rels/slide1.xml.rels','[Content_Types].xml'].includes(name))continue;assert(await file.async('base64')===await output.file(name).async('base64'),'导出保留模板部件：'+name);}
+ assert((await output.file('ppt/slides/slide1.xml').async('string')).includes('测试'),'新增内容写入选中页');
+ document.querySelector('#result').textContent='PASS\n'+results.join('\n');
+}catch(error){document.querySelector('#result').textContent='FAIL\n'+error.stack;}
+</script>

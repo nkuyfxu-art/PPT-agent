@@ -1,4 +1,3 @@
 @echo off
 cd /d "%~dp0"
-node server.mjs
-pause
+node scripts/setup.mjs && node server.mjs

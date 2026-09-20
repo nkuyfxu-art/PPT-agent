@@ -1,0 +1,62 @@
+// Opt-in: uses the locally signed-in Codex account and consumes its model quota.
+const assert=require('node:assert/strict');
+const {spawn}=require('node:child_process');
+const {once}=require('node:events');
+const path=require('node:path');
+const fs=require('node:fs/promises');
+const {chromium}=require(process.env.PLAYWRIGHT_PATH||'playwright');
+const JSZip=require('jszip');
+(async()=>{
+ const root=path.resolve(__dirname,'..'),out=path.resolve(process.env.TEST_OUTPUT_DIR||path.join(root,'../outputs'));
+ await fs.mkdir(out,{recursive:true});
+ const port=process.env.TEST_PORT||'4176',base=`http://127.0.0.1:${port}`;
+ const server=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,PORT:port,AI_PROVIDER:'codex'},stdio:['ignore','pipe','pipe']});
+ let browser;
+ try{
+  await once(server.stdout,'data');
+  browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL||'chrome',headless:true});
+  const page=await browser.newPage({viewport:{width:1440,height:1100}});
+  const errors=[],calls=[];
+  page.on('pageerror',e=>errors.push(e.message));
+  page.on('response',async response=>{if(response.url().includes('/api/ai/')&&!response.url().endsWith('/status')){const body=await response.json();calls.push({url:response.url(),status:response.status(),body});console.log(response.url().split('/').pop(),response.status(),JSON.stringify(body));}});
+  await page.goto(base);
+  await page.waitForFunction(()=>document.querySelector('#slideSelect').options[0]?.textContent==='第 1 页');
+  assert.match(await page.locator('#aiMode').textContent(),/Codex/);
+  const source=await page.evaluate(()=>{
+   const c=document.createElement('canvas');c.width=1200;c.height=800;
+   const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.fillStyle='#111';x.font='42px "PingFang SC", sans-serif';
+   x.fillText('1. 如图，三角形 ABC 中，AB=AC，',70,85);
+   x.fillText('∠A=40°，求 ∠B 的度数。',70,150);
+   x.strokeStyle='#111';x.lineWidth=5;x.beginPath();x.moveTo(600,285);x.lineTo(330,660);x.lineTo(870,660);x.closePath();x.stroke();
+   x.font='italic 46px serif';x.fillText('A',585,255);x.fillText('B',275,710);x.fillText('C',880,710);
+   return c.toDataURL('image/png').split(',')[1];
+  });
+  const fixture=path.join(out,'triangle-input.png');await fs.writeFile(fixture,Buffer.from(source,'base64'));
+  await page.locator('#imageInput').setInputFiles(fixture);await page.locator('#start').click();
+  await page.waitForFunction(()=>['AI 识别完成','本地识别完成','识别失败'].includes(document.querySelector('#badge').textContent),null,{timeout:600000});
+  console.log('Recognition:',await page.locator('#status').textContent());
+  await fs.writeFile(path.join(out,'codex-responses.json'),JSON.stringify(calls,null,2));
+  assert.equal(await page.locator('#badge').textContent(),'AI 识别完成');
+  assert(await page.locator('.geometry-editor').count()>0,'No editable semantic geometry');
+  assert(await page.locator('#regions textarea').count()>0,'No editable OCR text');
+  await page.locator('#personalPrompt').fill('文字改为34号，图片大小70%，其他保持不变');
+  await page.locator('#applyPersonal').click();
+  await page.waitForFunction(()=>!document.querySelector('#applyPersonal').disabled,null,{timeout:240000});
+  assert.equal(await page.locator('#textSize').inputValue(),'34');
+  assert.equal(await page.locator('#imageScale').inputValue(),'70');
+  await page.locator('#preview').click();
+  await page.waitForFunction(()=>!document.querySelector('#export').disabled,null,{timeout:30000});
+  await page.locator('#previewCanvas').screenshot({path:path.join(out,'codex-preview.png')});
+  const promise=page.waitForEvent('download');await page.locator('#export').click();const download=await promise;
+  const resultPath=path.join(out,'Slidecraft-Codex-test.pptx');await download.saveAs(resultPath);
+  const zip=await JSZip.loadAsync(await fs.readFile(resultPath));const slide=await zip.file('ppt/slides/slide1.xml').async('string');
+  assert.match(slide,/m:oMath/);assert(!slide.includes('circ'));
+  const editorValues=await page.locator('#regions textarea').evaluateAll(els=>els.map(el=>el.value));
+  assert.equal((editorValues.join(' ').match(/的度数/g)||[]).length,1,'Repeated OCR paragraph');assert.match(slide,/三角形/);assert.match(slide,/Agent 几何线/);assert.match(slide,/Agent 几何字母 A/);
+  for(const route of ['analyze','ocr','image','personalize'])assert(calls.some(c=>c.url.endsWith('/'+route)&&c.status===200),route);
+  assert.deepEqual(errors,[]);
+  await fs.writeFile(path.join(out,'codex-responses.json'),JSON.stringify(calls,null,2));
+  await page.screenshot({path:path.join(out,'codex-workspace.png'),fullPage:true});
+  console.log('PASS: four real Codex model calls, editable geometry, Office Math and PPTX export.');
+ }finally{await browser?.close();server.kill();}
+})().catch(error=>{console.error(error);process.exitCode=1;});

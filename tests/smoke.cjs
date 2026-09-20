@@ -1,27 +1,98 @@
-// Run with PLAYWRIGHT_PATH pointing to an installed playwright package, or npm install --no-save playwright.
-const {chromium}=require(process.env.PLAYWRIGHT_PATH||'playwright');
-const assert=require('node:assert/strict');
-const fs=require('node:fs/promises');
-const path=require('node:path');
-(async()=>{
- const browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL||'msedge',headless:true});
- try{const page=await browser.newPage({viewport:{width:1440,height:1100},acceptDownloads:true});const errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto(process.env.BASE_URL||'http://127.0.0.1:4173');await page.waitForFunction(()=>!document.querySelector('#templateCatalog').disabled);assert.equal(await page.locator('#templateCatalog').evaluate(e=>e.value),'default-template.pptx');assert(await page.locator('#start').isDisabled());assert(await page.locator('#slideSelect').isEnabled());assert.equal(await page.locator('#textSize').inputValue(),'32');assert.equal(await page.locator('#textY').inputValue(),'14');assert.equal(await page.locator('#imageScale').inputValue(),'72');assert.equal(await page.locator('#imageY').inputValue(),'58');
- const [chooser]=await Promise.all([page.waitForEvent('filechooser'),page.locator('#chooseImage').click()]);await chooser.setFiles(path.resolve(__dirname,'../ui-check.png'));await page.waitForFunction(()=>document.querySelector('#imageStatus').textContent.includes('已载入'));assert(await page.locator('#start').isEnabled());await page.locator('#reset').click();
- await page.locator('#demo').click();await page.waitForFunction(()=>!document.querySelector('#start').disabled);await page.locator('#personalPrompt').fill('文字34号，文字位置17%，图片大小62%，线条3像素，保留细节');await page.locator('#applyPersonal').click();await page.waitForFunction(()=>!document.querySelector('#applyPersonal').disabled);assert.equal(await page.locator('#textSize').inputValue(),'34');assert.equal(await page.locator('#textY').inputValue(),'17');assert.equal(await page.locator('#imageScale').inputValue(),'62');assert.equal(await page.locator('#lineWidth').inputValue(),'3');assert.equal(await page.locator('#detailMode').inputValue(),'detail');await page.locator('#resetPersonal').click();assert.equal(await page.locator('#textSize').inputValue(),'32');
- await page.locator('#start').click();assert(await page.locator('#export').isDisabled());
- await page.waitForFunction(()=>document.querySelector('#elapsed').textContent!=='00:00');
- await page.waitForFunction(()=>!document.querySelector('#start').disabled,null,{timeout:120000});
- assert.match(await page.locator('.formula-editor textarea').first().inputValue(),/\$MAKE IDEAS EDITABLE\$/);assert(await page.getByRole('button',{name:'自动公式化'}).count()>=1);assert(await page.locator('.formula-live').count()>=1);
- assert.equal(await page.locator('#progress').evaluate(e=>e.value),100);assert(+(await page.locator('#count').innerText())>=2);assert(await page.locator('.formula-editor textarea').count()>=1);assert(await page.locator('.region img').count()>=1);
- const pixels=await page.locator('.region img').evaluate(async img=>{await img.decode();const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const x=c.getContext('2d');x.drawImage(img,0,0);const d=x.getImageData(0,0,c.width,c.height).data;let white=0,other=0,clear=0;for(let i=0;i<d.length;i+=4){if(d[i+3]===0)clear++;else if(d[i+3]===255&&d[i]===255&&d[i+1]===255&&d[i+2]===255)white++;else other++;}return{white,other,clear,width:img.naturalWidth,height:img.naturalHeight};});assert(pixels.clear>0&&pixels.white>0);assert(pixels.other>0);assert(Math.max(pixels.width,pixels.height)>=1000);
- const firstText=page.locator('.formula-editor textarea').first();await firstText.fill('∠AOB=120°ON');await page.getByRole('button',{name:'自动公式化'}).first().click();assert.equal(await firstText.inputValue(),'$∠AOB=120°ON$');await firstText.fill('1. 如图，已知 AB=AC=2，AD=4，且 y=\\frac{1}{2}，求 BD·CD');await page.getByRole('button',{name:'自动公式化'}).first().click();assert.match(await firstText.inputValue(),/^1\. 如图，已知 \$AB=AC=2\$，\$AD=4\$，且 \$y=\\frac\{1\}\{2\}\$，求 \$BD \\cdot CD\$$/);await firstText.fill((await firstText.inputValue())+'\n$$\\vec{BD} \\cdot \\vec{CD} = AD^2 - AB^2$$');
- assert(await page.locator('#export').isDisabled());await page.locator('#preview').click();await page.waitForFunction(()=>!document.querySelector('#previewPanel').hidden);const previewSize=await page.locator('#previewCanvas').evaluate(c=>[c.width,c.height]);assert.equal(previewSize[0],960);assert(previewSize[1]>0&&previewSize[1]<=960);assert(await page.locator('#export').isEnabled());const [download]=await Promise.all([page.waitForEvent('download'),page.locator('#export').click()]);const result=await download.path();
- const bytes=await fs.readFile(result);const structure=await page.evaluate(async bytes=>{const zip=await JSZip.loadAsync(new Uint8Array(bytes));const original=await JSZip.loadAsync(await(await fetch('demo-template.pptx')).arrayBuffer());const str=await zip.file('ppt/slides/slide1.xml').async('string');const d=new DOMParser().parseFromString(str,'application/xml');const a='http://schemas.openxmlformats.org/drawingml/2006/main',p='http://schemas.openxmlformats.org/presentationml/2006/main',a14='http://schemas.microsoft.com/office/drawing/2010/main',m='http://schemas.openxmlformats.org/officeDocument/2006/math';const unmodified=[];for(const f of Object.keys(original.files)){if(original.files[f].dir||['ppt/slides/slide1.xml','ppt/slides/_rels/slide1.xml.rels','[Content_Types].xml'].includes(f))continue;unmodified.push(await original.file(f).async('base64')===await zip.file(f).async('base64'));}const props=[...d.getElementsByTagNameNS(a,'rPr')];return{valid:!d.querySelector('parsererror'),pics:d.getElementsByTagNameNS(p,'pic').length,editable:[...d.getElementsByTagNameNS(a,'t')].map(e=>e.textContent).join(''),mathEditable:[...d.getElementsByTagNameNS(m,'t')].map(e=>e.textContent).join(''),officeMath:d.getElementsByTagNameNS(a14,'m').length,fractions:d.getElementsByTagNameNS(m,'f').length,accents:d.getElementsByTagNameNS(m,'acc').length,superscripts:d.getElementsByTagNameNS(m,'sSup').length,fonts:props.filter(e=>e.getAttribute('b')==='1').map(e=>+e.getAttribute('sz')),mathFonts:[...d.getElementsByTagNameNS(a,'latin')].map(e=>e.getAttribute('typeface')),mathStyles:[...d.getElementsByTagNameNS(m,'sty')].map(e=>e.getAttributeNS(m,'val')||e.getAttribute('m:val')),background:str.includes('19362B'),unmodified:unmodified.every(Boolean)};},[...bytes]);
- assert(structure.valid&&structure.background&&structure.unmodified);assert(structure.pics>=1);assert.match(structure.editable,/SLIDECRAFT/);assert.match(structure.editable,/1\. 如图，已知/);assert.match(structure.mathEditable,/AB=AC=2.*AD=4.*y=.*1.*2.*BD\s*·\s*CD.*BD.*·.*CD.*AD.*2.*AB.*2/);assert(structure.officeMath>=5&&structure.fractions>=1&&structure.accents>=2&&structure.superscripts>=2);assert(structure.fonts.every(s=>s>=800&&s<=3200));assert(structure.mathFonts.includes('Cambria Math'));assert(structure.mathStyles.length&&structure.mathStyles.every(v=>v==='bi'));
- await page.locator('.formula-editor textarea').first().fill('很长的文字'.repeat(30));assert(await page.locator('#export').isDisabled());await page.locator('#preview').click();await page.waitForFunction(()=>!document.querySelector('#previewPanel').hidden);assert(await page.locator('#export').isEnabled());
- await page.locator('#reset').click();assert.equal(await page.locator('#elapsed').innerText(),'00:00');assert.equal(await page.locator('#count').innerText(),'0');assert(await page.locator('#start').isDisabled());assert(await page.locator('#export').isDisabled());
- await page.locator('#demo').click();await page.waitForFunction(()=>!document.querySelector('#start').disabled);await page.locator('#start').click();await page.locator('#reset').click();await page.waitForTimeout(1500);assert.equal(await page.locator('#count').innerText(),'0');assert(await page.locator('#start').isDisabled());
- assert.deepEqual(errors,[]);console.log('PASS: 4x transparent line art and personalization controls, automatic inline LaTeX/Office Math, vectors and superscripts, preview gate, template preservation, reset and cancellation.');
- }finally{await browser.close();}
-})().catch(e=>{console.error(e);process.exit(1);});
+const assert = require('node:assert/strict');
+const {spawn} = require('node:child_process');
+const {once} = require('node:events');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const {chromium} = require(process.env.PLAYWRIGHT_PATH || 'playwright');
+const JSZip = require('jszip');
+
+(async () => {
+  const root = path.resolve(__dirname, '..');
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'slidecraft-smoke-'));
+  const port = process.env.TEST_PORT || '4175';
+  const base = `http://127.0.0.1:${port}`;
+  const server = spawn(process.execPath, ['server.mjs'], {
+    cwd: root, env: {...process.env, PORT: port, SILICONFLOW_API_KEY: '', AI_API_KEY: '', AI_PROVIDER: 'api'}, stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let browser;
+  let output = '';
+  server.stdout.on('data', chunk => output += chunk);
+  server.stderr.on('data', chunk => output += chunk);
+  try {
+    await Promise.race([
+      once(server.stdout, 'data'),
+      once(server, 'exit').then(() => {throw Error(`Server failed: ${output}`);}),
+      new Promise((_, reject) => setTimeout(() => reject(Error('Server startup timeout')), 10000).unref())
+    ]);
+    assert.equal((await fetch(`${base}/.env`)).status, 403);
+    const templates = await (await fetch(`${base}/api/templates`)).json();
+    assert(templates.templates.includes('default-template.pptx'));
+    for (const resource of ['/vendor/jszip.min.js', '/vendor/tesseract.min.js', '/vendor/ocr/worker.min.js', '/vendor/ocr/chi_sim.traineddata.gz', '/vendor/ocr/eng.traineddata.gz', '/assets/watermark.png']) {
+      const response = await fetch(base + resource);
+      assert.equal(response.status, 200, resource);
+      assert((await response.arrayBuffer()).byteLength > 100, resource);
+    }
+    browser = await chromium.launch({channel: process.env.BROWSER_CHANNEL || 'chrome', headless: true});
+    const page = await browser.newPage({viewport: {width: 1440, height: 1100}});
+    const errors = [], external = [], missing = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('response', response => {if(response.status() === 404)missing.push(response.url());});
+    await page.route('**/*', route => {
+      const url = route.request().url();
+      if(url.startsWith('http') && !url.startsWith(base + '/')) {external.push(url); return route.abort();}
+      return route.continue();
+    });
+    await page.goto(base);
+    await page.waitForFunction(() => document.querySelector('#slideSelect').options[0]?.textContent === '第 1 页');
+    await page.locator('#demo').click();
+    await page.locator('#start').click();
+    await page.waitForFunction(() => ['本地识别完成', '识别失败'].includes(document.querySelector('#badge').textContent), null, {timeout: 120000});
+    const status = await page.locator('#status').textContent();
+    console.log(status);
+    assert.equal(await page.locator('#badge').textContent(), '本地识别完成', status);
+    assert(await page.locator('#regions textarea').count() > 0, 'Real OCR text missing');
+    assert(await page.locator('#regions .image-info img').count() > 0, 'Line image missing');
+    const values = await page.locator('#regions textarea').evaluateAll(els => els.map(el => el.value));
+    assert.match(values.join(' '), /MAKE|IDEAS|EDITABLE|screenshot/i, 'OCR did not recognize demo text');
+    console.log('OCR:', values);
+    await page.locator('#regions textarea').first().fill('1. 已知 $AB=3$，求 $x^2$。');
+    await page.locator('#preview').click();
+    await page.waitForFunction(() => !document.querySelector('#export').disabled, null, {timeout: 30000});
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export').click();
+    const download = await downloadPromise;
+    const pptPath = path.join(temp, 'result.pptx');
+    await download.saveAs(pptPath);
+    const original = await JSZip.loadAsync(await fs.readFile(path.join(root, 'demo-template.pptx')));
+    const result = await JSZip.loadAsync(await fs.readFile(pptPath));
+    const slide = await result.file('ppt/slides/slide1.xml').async('string');
+    assert.match(slide, /已知/);
+    assert.match(slide, /m:oMath/);
+    assert.match(slide, /<p:pic>/);
+    for (const [name, file] of Object.entries(original.files)) {
+      if (file.dir || name === 'ppt/slides/slide1.xml' || name === 'ppt/slides/_rels/slide1.xml.rels' || name === '[Content_Types].xml') continue;
+      assert(result.file(name), `Template part removed: ${name}`);
+      assert.deepEqual(await result.file(name).async('nodebuffer'), await file.async('nodebuffer'), name);
+    }
+    if (process.env.TEST_OUTPUT_DIR) {
+      await fs.mkdir(process.env.TEST_OUTPUT_DIR, {recursive: true});
+      await fs.copyFile(pptPath, path.join(process.env.TEST_OUTPUT_DIR, 'Slidecraft-local-test.pptx'));
+      await page.locator('#previewCanvas').screenshot({path: path.join(process.env.TEST_OUTPUT_DIR, 'local-preview.png')});
+      await page.screenshot({path: path.join(process.env.TEST_OUTPUT_DIR, 'local-workspace.png'), fullPage: true});
+    }
+    await page.locator('#regions textarea').first().fill('修改后需要重新预览');
+    assert(await page.locator('#export').isDisabled());
+    await page.locator('#reset').click();
+    assert.equal(await page.locator('#count').textContent(), '0');
+    assert.equal(await page.locator('#slideSelect').inputValue(), '0');
+    assert.deepEqual(errors, [], 'Browser errors');
+    assert.deepEqual(missing, [], 'Missing local resources');
+    assert.deepEqual(external, [], 'Local flow requested external resources');
+    console.log('PASS: local resources, real OCR, line art, editable text/math, PPTX download, template preservation, preview invalidation and reset.');
+  } finally {
+    await browser?.close();
+    server.kill();
+    await fs.rm(temp, {recursive: true, force: true});
+  }
+})().catch(error => {console.error(error); process.exitCode = 1;});
